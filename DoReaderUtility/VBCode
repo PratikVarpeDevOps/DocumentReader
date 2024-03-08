@@ -1,0 +1,193 @@
+Imports System.IO
+Imports System.Text
+Imports DocumentFormat.OpenXml.Packaging
+Imports DocumentFormat.OpenXml.Spreadsheet
+Imports DocumentFormat.OpenXml.Wordprocessing
+
+Module DocumentReader
+
+    Sub Main()
+        Dim config As Properties = LoadConfig()
+
+        Dim folderPath As String = config.GetProperty("folderPath")
+        Dim excelPath As String = config.GetProperty("excelFilePath")
+
+        Try
+            Dim allNatureOfFacility As New List(Of SummaryDetails)()
+
+            Using stream As DirectoryStream(Of Path) = Directory.EnumerateFiles(folderPath, "*.docx")
+                For Each entry As Path In stream
+                    Dim borrowersMap As Dictionary(Of String, String) = ReadBorrowers(entry.ToString())
+                    Dim natureOfFacility As List(Of SummaryDetails) = ReadNatureOfFacility(entry.ToString(), borrowersMap)
+                    allNatureOfFacility.AddRange(natureOfFacility)
+                Next
+            End Using
+
+            CreateExcelFile(excelPath, allNatureOfFacility)
+
+        Catch ex As IOException
+            Console.WriteLine(ex.ToString())
+        End Try
+    End Sub
+
+    Private Function LoadConfig() As Properties
+        Dim config As New Properties()
+        Dim configFilePath As String = "./config.properties" ' Replace with your actual path
+
+        Try
+            Using input As New FileStream(configFilePath, FileMode.Open)
+                config.Load(input)
+            End Using
+        Catch ex As IOException
+            Console.WriteLine(ex.ToString())
+        End Try
+
+        Return config
+    End Function
+
+    Private Sub CreateExcelFile(filePath As String, natureOfFacility As List(Of SummaryDetails))
+        Try
+            Using spreadsheetDocument As SpreadsheetDocument = SpreadsheetDocument.Create(filePath, SpreadsheetDocumentType.Workbook)
+                Dim workbookPart As WorkbookPart = spreadsheetDocument.AddWorkbookPart()
+                workbookPart.Workbook = New Workbook()
+
+                Dim sheetPart As WorksheetPart = workbookPart.AddNewPart(Of WorksheetPart)()
+                Dim sheetData As New SheetData()
+                sheetPart.Worksheet = New Worksheet(sheetData)
+
+                ' Create header row
+                Dim headerRow As New Row()
+                Dim headers() As String = {"Borrower Name", "CIF", "Nature Of Facility", "Type", "Facility Limit", "Tenor", "Availability Period"}
+
+                For i As Integer = 0 To headers.Length - 1
+                    Dim cell As New Cell() With {
+                        .DataType = CellValues.String,
+                        .CellValue = New CellValue(headers(i))
+                    }
+                    headerRow.Append(cell)
+                Next
+
+                sheetData.Append(headerRow)
+
+                ' Populate data rows
+                For Each details As SummaryDetails In natureOfFacility
+                    Dim row As New Row()
+
+                    row.Append(CreateTextCell(details.BorrowerName))
+                    row.Append(CreateTextCell(details.Cif))
+                    row.Append(CreateTextCell(details.NatureOfFaciltiy))
+                    row.Append(CreateTextCell(details.Type))
+                    row.Append(CreateTextCell(details.FacilityLimit))
+                    row.Append(CreateTextCell(details.Tenor))
+                    row.Append(CreateTextCell(details.Period))
+
+                    sheetData.Append(row)
+                Next
+            End Using
+
+        Catch ex As IOException
+            Console.WriteLine(ex.ToString())
+        End Try
+    End Sub
+
+    Private Function CreateTextCell(text As String) As Cell
+        Return New Cell() With {
+            .DataType = CellValues.String,
+            .CellValue = New CellValue(text)
+        }
+    End Function
+
+    Private Function ReadNatureOfFacility(filePath As String, borrowersMap As Dictionary(Of String, String)) As List(Of SummaryDetails)
+        Try
+            Using fis As New FileStream(filePath, FileMode.Open)
+                Using document As New WordprocessingDocument(fis)
+                    Dim summary As New List(Of SummaryDetails)()
+
+                    For Each table As Table In document.MainDocumentPart.Document.Body.Elements(Of Table)()
+                        Dim details As New SummaryDetails()
+                        Dim boName As String = borrowersMap("Borrowers")
+                        details.BorrowerName = boName
+                        details.Cif = borrowersMap("CIF")
+
+                        For Each row As TableRow In table.Elements(Of TableRow)()
+                            Dim firstCellText As String = row.Elements(Of TableCell)().First().InnerText.Trim()
+                            Dim secondCellText As String = ""
+
+                            If row.Elements(Of TableCell)().ElementAtOrDefault(1) IsNot Nothing Then
+                                secondCellText = row.Elements(Of TableCell)().ElementAt(1).InnerText.Trim()
+
+                                ' Check if the first column contains 'Nature Of Facility'
+                                If firstCellText.Contains("Nature Of Facility") Then
+                                    details.NatureOfFaciltiy = secondCellText
+                                End If
+                                If firstCellText.Contains("Type") Then
+                                    details.Type = secondCellText
+                                End If
+                                If firstCellText.Contains("Facility Limit") Then
+                                    details.FacilityLimit = secondCellText
+                                End If
+                                If firstCellText.Contains("Tenor") Then
+                                    details.Tenor = secondCellText
+                                End If
+                                If firstCellText.Contains("Availability Period") Then
+                                    details.Period = secondCellText
+                                End If
+                            End If
+                        Next
+
+                        summary.Add(details)
+                    Next
+
+                    Return summary
+                End Using
+            End Using
+
+        Catch ex As IOException
+            Console.WriteLine(ex.ToString())
+            Return New List(Of SummaryDetails)()
+        End Try
+    End Function
+
+    Private Function ReadBorrowers(filePath As String) As Dictionary(Of String, String)
+        Try
+            Using fis As New FileStream(filePath, FileMode.Open)
+                Using document As New WordprocessingDocument(fis)
+                    Dim borrowersMap As New Dictionary(Of String, String)()
+                    Dim borrowersValue As New StringBuilder()
+                    Dim cifvalue As String = ""
+                    Dim borrowerFound As Boolean = False
+                    Dim cifFound As Boolean = False
+
+                    For Each paragraph As Paragraph In document.MainDocumentPart.Document.Body.Elements(Of Paragraph)()
+                        Dim text As String = paragraph.InnerText.Trim()
+
+                        If text.StartsWith("Borrower(s):") AndAlso Not borrowerFound Then
+                            ' Extract the value after "Borrower(s):"
+                            Dim value As String = text.Substring("Borrower(s):".Length).Trim()
+                            borrowersValue.Append(value)
+                            borrowerFound = True
+
+                        End If
+
+                        If text.StartsWith("CIF Number") AndAlso Not cifFound Then
+                            ' Extract the value after "Borrower(s):"
+                            cifvalue = text.Substring("CIF Number".Length).Trim()
+                            cifFound = True
+                        End If
+                    Next
+
+                    ' Put the final value in the map
+                    borrowersMap("Borrowers") = borrowersValue.ToString().Trim()
+                    borrowersMap("CIF") = cifvalue.Trim()
+
+                    Return borrowersMap
+                End Using
+            End Using
+
+        Catch ex As IOException
+            Console.WriteLine(ex.ToString())
+            Return New Dictionary(Of String, String)()
+        End Try
+    End Function
+
+End Module
